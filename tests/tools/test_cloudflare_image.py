@@ -12,7 +12,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.base_tool import ToolStatus  # noqa: E402
+from tools.base_tool import Determinism, ToolStatus  # noqa: E402
 from tools.graphics import cloudflare_image as module  # noqa: E402
 from tools.graphics.cloudflare_image import CloudflareImage  # noqa: E402
 from tools.tool_registry import ToolRegistry  # noqa: E402
@@ -118,7 +118,9 @@ class TestExecuteSuccess:
         assert out.read_bytes() == raw
         assert result.data["format"] == "jpeg"
         assert result.data["steps"] == 4
-        assert result.data["seed"] is None
+        assert "seed" not in result.data
+        assert "seed_note" not in result.data
+        assert result.seed is None
         assert result.data["free_tier_note"]
 
         args, kwargs = mock_post.call_args
@@ -129,14 +131,17 @@ class TestExecuteSuccess:
         assert kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
         assert kwargs["json"] == {"prompt": "a cat", "steps": 4}
 
-    def test_seed_and_steps_forwarded(self, tool, mock_post, tmp_path):
+    def test_steps_forwarded_seed_never_sent(self, tool, mock_post, tmp_path):
+        # flux-1-schnell rejects any field besides prompt/steps (HTTP 400).
         mock_post.return_value = _ok()
         result = tool.execute(
             {"prompt": "a cat", "steps": 6, "seed": 42, "output_path": str(tmp_path / "a.jpg")}
         )
         assert result.success
-        assert mock_post.call_args.kwargs["json"] == {"prompt": "a cat", "steps": 6, "seed": 42}
-        assert result.data["seed"] == 42
+        assert mock_post.call_args.kwargs["json"] == {"prompt": "a cat", "steps": 6}
+        assert result.seed is None
+        assert "seed" not in result.data
+        assert result.data["seed_note"] == module._SEED_IGNORED_NOTE
 
     def test_png_conversion(self, tool, mock_post, tmp_path):
         from PIL import Image
@@ -234,7 +239,10 @@ class TestEdgeCases:
         assert props["steps"]["minimum"] == 1 and props["steps"]["maximum"] == 8
         assert props["prompt"]["maxLength"] == 2048
         assert tool.retry_policy.max_retries == 2
-        assert tool.idempotency_key_fields == ["prompt", "model", "steps", "seed"]
+        assert tool.idempotency_key_fields == ["prompt", "model", "steps"]
+        assert "seed" not in props
+        assert tool.supports["seed"] is False
+        assert tool.determinism == Determinism.STOCHASTIC
         assert tool.supports["negative_prompt"] is False
         assert "10,000" in tool.install_instructions
         assert "dash.cloudflare.com" in tool.install_instructions
@@ -341,11 +349,12 @@ class TestEdgeCases:
         assert tool.execute({"prompt": "x", "steps": steps, "output_path": str(out)}).success
         assert mock_post.call_args.kwargs["json"]["steps"] == steps
 
-    def test_seed_zero_forwarded(self, tool, mock_post, tmp_path):
+    def test_seed_zero_not_forwarded(self, tool, mock_post, tmp_path):
         mock_post.return_value = _ok()
         result = tool.execute({"prompt": "x", "seed": 0, "output_path": str(tmp_path / "a.jpg")})
-        assert mock_post.call_args.kwargs["json"]["seed"] == 0
-        assert result.data["seed"] == 0
+        assert result.success
+        assert "seed" not in mock_post.call_args.kwargs["json"]
+        assert result.data["seed_note"] == module._SEED_IGNORED_NOTE
 
     @pytest.mark.parametrize("body", [None, [], "str", {"success": True}, {"success": True, "result": None},
                                       {"success": True, "result": {"image": ""}}])

@@ -358,7 +358,7 @@ reference-image inputs are normalized to the provider's `images` array.
 
 **Limits:**
 - Output is roughly 1024x1024 JPEG; custom width/height is not supported.
-- `steps` accepts 1-8 and `seed` is supported; there is no negative prompt.
+- `steps` accepts 1-8; there is no negative prompt and no `seed` (the model rejects it, so outputs are not reproducible and a passed `seed` is ignored).
 - Text-to-image only: no image editing or reference images.
 - Returns HTTP 429 once the daily quota is exhausted; retry the next day or route to another provider.
 - Routable through `image_selector`.

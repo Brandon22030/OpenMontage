@@ -35,6 +35,11 @@ _FREE_TIER_NOTE = "Cloudflare Workers AI free tier: 10,000 neurons/day, resets d
 _JPEG_EXTENSIONS = {".jpg", ".jpeg"}
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _MAX_PROMPT_LENGTH = 2048
+# flux-1-schnell on Workers AI accepts only {prompt, steps}; any other field
+# (including seed) is rejected with HTTP 400, so output is not reproducible.
+_SEED_IGNORED_NOTE = (
+    "seed is not supported by @cf/black-forest-labs/flux-1-schnell and was ignored"
+)
 
 
 class CloudflareImage(BaseTool):
@@ -45,7 +50,7 @@ class CloudflareImage(BaseTool):
     provider = "cloudflare"
     stability = ToolStability.EXPERIMENTAL
     execution_mode = ExecutionMode.SYNC
-    determinism = Determinism.SEEDED
+    determinism = Determinism.STOCHASTIC
     runtime = ToolRuntime.API
 
     dependencies = ["env:CLOUDFLARE_ACCOUNT_ID", "env:CLOUDFLARE_API_TOKEN"]
@@ -59,7 +64,7 @@ class CloudflareImage(BaseTool):
 
     capabilities = ["generate_image", "text_to_image"]
     supports = {
-        "seed": True,
+        "seed": False,
         "negative_prompt": False,
         "custom_size": False,
         "image_edit": False,
@@ -86,7 +91,6 @@ class CloudflareImage(BaseTool):
                 "default": _DEFAULT_MODEL,
             },
             "steps": {"type": "integer", "minimum": 1, "maximum": 8, "default": 4},
-            "seed": {"type": "integer"},
             "output_path": {"type": "string"},
         },
     }
@@ -95,7 +99,7 @@ class CloudflareImage(BaseTool):
         cpu_cores=1, ram_mb=512, vram_mb=0, disk_mb=100, network_required=True
     )
     retry_policy = RetryPolicy(max_retries=2, retryable_errors=["rate_limit", "timeout"])
-    idempotency_key_fields = ["prompt", "model", "steps", "seed"]
+    idempotency_key_fields = ["prompt", "model", "steps"]
     side_effects = [
         "writes image file to output_path",
         "calls Cloudflare Workers AI API",
@@ -181,11 +185,11 @@ class CloudflareImage(BaseTool):
         import requests
 
         start = time.time()
-        seed = inputs.get("seed")
+        # Never forward seed: the model rejects it. Callers such as
+        # image_selector may still pass one, so it is ignored and reported.
+        seed_ignored = inputs.get("seed") is not None
 
         payload: dict[str, Any] = {"prompt": prompt, "steps": steps}
-        if seed is not None:
-            payload["seed"] = seed
 
         try:
             response = requests.post(
@@ -234,21 +238,23 @@ class CloudflareImage(BaseTool):
         except Exception as e:
             return self._fail(f"Cloudflare image generation failed: {e}")
 
+        data: dict[str, Any] = {
+            "provider": "cloudflare",
+            "model": _DEFAULT_MODEL,
+            "prompt": prompt,
+            "output": str(output_path),
+            "format": fmt,
+            "steps": steps,
+            "free_tier_note": _FREE_TIER_NOTE,
+        }
+        if seed_ignored:
+            data["seed_note"] = _SEED_IGNORED_NOTE
+
         return ToolResult(
             success=True,
-            data={
-                "provider": "cloudflare",
-                "model": _DEFAULT_MODEL,
-                "prompt": prompt,
-                "output": str(output_path),
-                "format": fmt,
-                "steps": steps,
-                "seed": seed,
-                "free_tier_note": _FREE_TIER_NOTE,
-            },
+            data=data,
             artifacts=[str(output_path)],
             cost_usd=0.0,
             duration_seconds=round(time.time() - start, 2),
-            seed=seed,
             model=_DEFAULT_MODEL,
         )
