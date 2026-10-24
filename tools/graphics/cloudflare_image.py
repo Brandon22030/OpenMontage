@@ -9,6 +9,7 @@ import base64
 import binascii
 import os
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ _RATE_LIMIT_MESSAGE = (
 )
 _FREE_TIER_NOTE = "Cloudflare Workers AI free tier: 10,000 neurons/day, resets daily at 00:00 UTC"
 _JPEG_EXTENSIONS = {".jpg", ".jpeg"}
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_MAX_PROMPT_LENGTH = 2048
 
 
 class CloudflareImage(BaseTool):
@@ -118,13 +121,24 @@ class CloudflareImage(BaseTool):
 
     @staticmethod
     def _fail(error: str) -> ToolResult:
+        """Build a failed result, scrubbing the API token from any message."""
+        token = os.environ.get("CLOUDFLARE_API_TOKEN")
+        if token:
+            error = error.replace(token, "***")
         return ToolResult(success=False, error=error, cost_usd=0.0)
 
     @staticmethod
+    def _pillow_format(ext: str) -> str | None:
+        """Return the Pillow format name for an extension, or None if unsupported."""
+        from PIL import Image
+
+        return Image.registered_extensions().get(ext)
+
+    @staticmethod
     def _write_image(image_bytes: bytes, output_path: Path) -> str:
-        """Write image bytes; convert with Pillow unless a JPEG extension. Returns format."""
+        """Write image bytes; keep raw JPEG bytes, otherwise convert with Pillow."""
         ext = output_path.suffix.lower()
-        if ext in _JPEG_EXTENSIONS:
+        if ext in _JPEG_EXTENSIONS and image_bytes.startswith(_JPEG_MAGIC):
             output_path.write_bytes(image_bytes)
             return "jpeg"
 
@@ -132,10 +146,10 @@ class CloudflareImage(BaseTool):
 
         from PIL import Image
 
+        fmt = Image.registered_extensions().get(ext)
+        if fmt is None:
+            raise ValueError(f"Unsupported output extension: {ext or '(none)'}")
         with Image.open(io.BytesIO(image_bytes)) as img:
-            fmt = Image.registered_extensions().get(ext)
-            if fmt is None:
-                raise ValueError(f"Unsupported output extension: {ext or '(none)'}")
             if fmt == "JPEG":
                 img = img.convert("RGB")
             img.save(output_path, format=fmt)
@@ -149,14 +163,24 @@ class CloudflareImage(BaseTool):
                 "Cloudflare credentials not found. " + self.install_instructions
             )
 
+        prompt = inputs.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            return self._fail("prompt is required")
+        if len(prompt) > _MAX_PROMPT_LENGTH:
+            return self._fail(f"prompt must be at most {_MAX_PROMPT_LENGTH} characters")
+
         steps = inputs.get("steps", 4)
         if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 8:
             return self._fail(f"steps must be an integer between 1 and 8, got {steps!r}")
 
+        output_path = Path(inputs.get("output_path", "cloudflare_image.jpg"))
+        ext = output_path.suffix.lower()
+        if ext not in _JPEG_EXTENSIONS and self._pillow_format(ext) is None:
+            return self._fail(f"Unsupported output extension: {ext or '(none)'}")
+
         import requests
 
         start = time.time()
-        prompt = inputs["prompt"]
         seed = inputs.get("seed")
 
         payload: dict[str, Any] = {"prompt": prompt, "steps": steps}
@@ -165,7 +189,9 @@ class CloudflareImage(BaseTool):
 
         try:
             response = requests.post(
-                _API_URL.format(account_id=account_id),
+                _API_URL.format(
+                    account_id=urllib.parse.quote(account_id, safe="")
+                ),
                 headers={
                     "Authorization": f"Bearer {api_token}",
                     "Content-Type": "application/json",
@@ -203,12 +229,10 @@ class CloudflareImage(BaseTool):
             except (binascii.Error, ValueError):
                 return self._fail("Cloudflare Workers AI returned invalid base64 image data")
 
-            output_path = Path(inputs.get("output_path", "cloudflare_image.jpg"))
             output_path.parent.mkdir(parents=True, exist_ok=True)
             fmt = self._write_image(image_bytes, output_path)
         except Exception as e:
-            message = f"Cloudflare image generation failed: {e}".replace(api_token, "***")
-            return self._fail(message)
+            return self._fail(f"Cloudflare image generation failed: {e}")
 
         return ToolResult(
             success=True,
