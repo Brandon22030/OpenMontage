@@ -334,6 +334,37 @@ reference-image inputs are normalized to the provider's `images` array.
 
 ---
 
+### Cloudflare Workers AI - Image Generation
+
+> **Free-tier image generation (EXPERIMENTAL).** `cloudflare_image` calls
+> `@cf/black-forest-labs/flux-1-schnell` on Cloudflare Workers AI. The free
+> tier of 10,000 neurons/day makes it a good fit for prototyping, drafts and
+> storyboards at $0.
+
+**Tool unlocked:** `cloudflare_image`
+
+**Env vars:** `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN`
+
+**Setup:**
+1. Copy your Account ID from the [Cloudflare dashboard](https://dash.cloudflare.com).
+2. Go to [My Profile > API Tokens](https://dash.cloudflare.com/profile/api-tokens), click **Create Token** and use the **Workers AI** template.
+3. Add to `.env`:
+   ```
+   CLOUDFLARE_ACCOUNT_ID=your-account-id
+   CLOUDFLARE_API_TOKEN=your-api-token
+   ```
+
+**Cost:** $0 within the free tier (10,000 neurons/day), paid beyond that.
+
+**Limits:**
+- Output is roughly 1024x1024 JPEG; custom width/height is not supported.
+- `steps` accepts 1-8 and `seed` is supported; there is no negative prompt.
+- Text-to-image only: no image editing or reference images.
+- Returns HTTP 429 once the daily quota is exhausted; retry the next day or route to another provider.
+- Routable through `image_selector`.
+
+---
+
 ### fal.ai — Multi-Model Gateway
 
 > **Broad single-key coverage.** One API key unlocks image and video providers across multiple models.
@@ -1448,6 +1479,7 @@ These tools require only FFmpeg or Python packages — no GPU, no API key.
 | **ElevenLabs** | `ELEVENLABS_API_KEY` | `elevenlabs_tts`, `music_gen` | Free tier + paid |
 | **fish.audio** | `FISH_AUDIO_API_KEY` | `fish_audio_tts` | Free tier (s2.1-pro-free) + paid |
 | **fal.ai** | `FAL_KEY` | `flux_image`, `recraft_image`, `kling_video`, `veo_video`, `seedance_video`, `gemini_omni_fal`, `minimax_fal_video` | Pay-as-you-go |
+| **Cloudflare Workers AI** | `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` | `cloudflare_image` | Free tier (10k neurons/day) + paid |
 | **Atlas Cloud** | `ATLASCLOUD_API_KEY` | `atlas_image`, `atlas_video` | Pay-as-you-go |
 | **Kling Official** | `KLING_API_KEY` | `kling_official_video`, `kling_official_image`, `kling_tts`, `kling_avatar`, `kling_lip_sync` | Pay-as-you-go |
 | **Volcengine Ark** | `ARK_API_KEY` | `seedance_ark` | Pay-as-you-go |
