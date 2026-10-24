@@ -229,6 +229,10 @@ ATLASCLOUD_API_KEY=your-key    # Atlas Cloud — Seedream/Nano Banana/GPT Image 
 KLING_API_KEY=your-key         # Official Kling video, image, TTS, avatar, lip sync
 KLING_API_BASE_URL=            # Optional; default Singapore API endpoint
 
+# Free image generation (Cloudflare Workers AI, FLUX.1 schnell, 10k neurons/day free):
+CLOUDFLARE_ACCOUNT_ID=your-id  # Shown in the Cloudflare dashboard
+CLOUDFLARE_API_TOKEN=your-key  # My Profile > API Tokens > "Workers AI" template
+
 # Free stock media:
 PEXELS_API_KEY=your-key        # Free stock footage and images
 PIXABAY_API_KEY=your-key       # Free stock footage and images
@@ -515,6 +519,7 @@ Each tool declares which Layer 3 skills it relies on. The agent reads Layer 1 to
 | **Nano Banana 2** | Cloud API | Multimodal image generation and editing |
 | **Atlas Cloud** | Cloud API | Unified access to multiple image-generation model families |
 | **Recraft** | Cloud API | Design-focused generation |
+| **Cloudflare Workers AI** | Cloud API | FLUX.1 schnell, free tier (10k neurons/day) |
 | **Kling Official** | Cloud API | Official direct API for Kling image generation and reference workflows |
 | **Local Diffusion** | Local GPU | Stable Diffusion, free |
 | **Pexels** | Stock | Free stock images |
