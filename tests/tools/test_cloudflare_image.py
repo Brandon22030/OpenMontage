@@ -225,3 +225,112 @@ class TestNetworkGuard:
         result = tool.execute({"prompt": "x", "output_path": str(tmp_path / "a.jpg")})
         assert not result.success
         assert result.cost_usd == 0.0
+
+
+class TestEdgeCases:
+    def test_metadata_and_schema(self, tool):
+        assert tool.name == "cloudflare_image"
+        assert tool.version == "0.1.0"
+        assert tool.dependencies == ["env:CLOUDFLARE_ACCOUNT_ID", "env:CLOUDFLARE_API_TOKEN"]
+        assert tool.agent_skills == ["flux-best-practices"]
+        assert tool.input_schema["required"] == ["prompt"]
+        props = tool.input_schema["properties"]
+        for forbidden in ("width", "height", "negative_prompt"):
+            assert forbidden not in props
+        assert props["steps"]["minimum"] == 1 and props["steps"]["maximum"] == 8
+        assert props["prompt"]["maxLength"] == 2048
+        assert tool.retry_policy.max_retries == 2
+        assert tool.idempotency_key_fields == ["prompt", "model", "steps", "seed"]
+        assert tool.supports["negative_prompt"] is False
+        assert "10,000" in tool.install_instructions
+        assert "dash.cloudflare.com" in tool.install_instructions
+
+    def test_url_and_timeout(self, tool, mock_post, tmp_path):
+        mock_post.return_value = _ok()
+        tool.execute({"prompt": "x", "output_path": str(tmp_path / "a.jpg")})
+        args, kwargs = mock_post.call_args
+        assert args[0] == (
+            f"https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}"
+            "/ai/run/@cf/black-forest-labs/flux-1-schnell"
+        )
+        assert kwargs["headers"]["Authorization"] == f"Bearer {TOKEN}"
+        assert kwargs["timeout"] == 120
+
+    def test_default_output_path_and_nested_parent(self, tool, mock_post, tmp_path, monkeypatch):
+        mock_post.return_value = _ok()
+        out = tmp_path / "a" / "b" / "c.jpeg"
+        result = tool.execute({"prompt": "x", "output_path": str(out)})
+        assert result.success and out.exists()
+        assert result.data["format"] == "jpeg"
+        monkeypatch.chdir(tmp_path)
+        result = tool.execute({"prompt": "x"})
+        assert result.success and (tmp_path / "cloudflare_image.jpg").exists()
+
+    def test_uppercase_jpg_extension_raw_bytes(self, tool, mock_post, tmp_path):
+        raw = _jpeg_bytes()
+        mock_post.return_value = _ok(raw)
+        out = tmp_path / "A.JPG"
+        assert tool.execute({"prompt": "x", "output_path": str(out)}).success
+        assert out.read_bytes() == raw
+
+    def test_webp_conversion(self, tool, mock_post, tmp_path):
+        from PIL import Image
+
+        mock_post.return_value = _ok()
+        out = tmp_path / "a.webp"
+        result = tool.execute({"prompt": "x", "output_path": str(out)})
+        assert result.success and result.data["format"] == "webp"
+        with Image.open(out) as img:
+            assert img.format == "WEBP"
+
+    def test_unsupported_extension_fails(self, tool, mock_post, tmp_path):
+        mock_post.return_value = _ok()
+        result = tool.execute({"prompt": "x", "output_path": str(tmp_path / "a.xyz")})
+        assert not result.success and result.cost_usd == 0.0
+
+    def test_non_image_bytes_with_png_fails(self, tool, mock_post, tmp_path):
+        mock_post.return_value = _ok(b"not an image")
+        result = tool.execute({"prompt": "x", "output_path": str(tmp_path / "a.png")})
+        assert not result.success and result.cost_usd == 0.0
+        assert TOKEN not in (result.error or "")
+
+    @pytest.mark.parametrize("steps", [0, -1, 9, True, "4", 4.5])
+    def test_invalid_steps_no_network(self, tool, mock_post, steps):
+        result = tool.execute({"prompt": "x", "steps": steps})
+        assert not result.success and result.cost_usd == 0.0
+        mock_post.assert_not_called()
+
+    @pytest.mark.parametrize("steps", [1, 8])
+    def test_steps_boundaries(self, tool, mock_post, tmp_path, steps):
+        mock_post.return_value = _ok()
+        out = tmp_path / "a.jpg"
+        assert tool.execute({"prompt": "x", "steps": steps, "output_path": str(out)}).success
+        assert mock_post.call_args.kwargs["json"]["steps"] == steps
+
+    def test_seed_zero_forwarded(self, tool, mock_post, tmp_path):
+        mock_post.return_value = _ok()
+        result = tool.execute({"prompt": "x", "seed": 0, "output_path": str(tmp_path / "a.jpg")})
+        assert mock_post.call_args.kwargs["json"]["seed"] == 0
+        assert result.data["seed"] == 0
+
+    @pytest.mark.parametrize("body", [None, [], "str", {"success": True}, {"success": True, "result": None},
+                                      {"success": True, "result": {"image": ""}}])
+    def test_malformed_bodies(self, tool, mock_post, tmp_path, body):
+        mock_post.return_value = _FakeResponse(body)
+        result = tool.execute({"prompt": "x", "output_path": str(tmp_path / "a.jpg")})
+        assert not result.success and result.cost_usd == 0.0
+
+    def test_429_and_http_errors_do_not_leak_token(self, tool, mock_post, tmp_path):
+        for status in (429, 401, 503):
+            mock_post.return_value = _FakeResponse(
+                {"errors": [{"message": "bad"}]}, status_code=status
+            )
+            result = tool.execute({"prompt": "x", "output_path": str(tmp_path / "a.jpg")})
+            assert not result.success and result.cost_usd == 0.0
+            assert TOKEN not in (result.error or "")
+
+    def test_empty_env_values_treated_missing(self, monkeypatch):
+        monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "")
+        monkeypatch.setenv("CLOUDFLARE_API_TOKEN", "")
+        result = CloudflareImage().execute({"prompt": "x"})
+        assert not result.success and "CLOUDFLARE_API_TOKEN" in result.error
